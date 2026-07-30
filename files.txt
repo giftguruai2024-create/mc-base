@@ -1,0 +1,7 @@
+# Manifest read by update.lua. One filename per line.
+# Add a line and the updater pulls it to every machine automatically.
+update.lua
+bus.lua
+rollcall.lua
+amalgam.lua
+panel.lua
