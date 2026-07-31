@@ -68,14 +68,56 @@ local rowByY  = {}
 local buttons = {}
 
 -------------------------------------------------------------------------------
--- Freshness (stub -- Task 8 implements the comparison)
+-- Freshness
+--
+-- Fetch files.txt from the repo, hash every listed file with the SAME
+-- function the machines use, and compare per file. Cache-bust every fetch:
+-- GitHub raw caches for minutes and a stale cache here means the screen
+-- lies about the whole base.
 -------------------------------------------------------------------------------
 
+local function fetchRemote()
+  local res = http.get(BASE .. "files.txt?cb=" .. tostring(os.epoch("utc")))
+  if not res then
+    remote, remoteErr = nil, "unreachable"
+    return
+  end
+  local manifest = res.readAll()
+  res.close()
+
+  local out = {}
+  for line in manifest:gmatch("[^\r\n]+") do
+    local name = line:match("^%s*(.-)%s*$")
+    if name ~= "" and name:sub(1, 1) ~= "#" then
+      local r = http.get(BASE .. name .. "?cb=" .. tostring(os.epoch("utc")))
+      if not r then
+        remote, remoteErr = nil, "failed on " .. name
+        return
+      end
+      out[name] = bus.hashString(r.readAll())
+      r.close()
+    end
+  end
+  remote, remoteErr = out, nil
+end
+
+-- A machine is STALE if any repo-tracked file differs from, or is missing
+-- from, its reported fingerprint. Machines that report no fingerprint at
+-- all predate the bus change: unknown, not broken.
 local function codeState(m)
-  return "unknown"
+  if remote == nil then return "unknown" end
+  if type(m.fingerprint) ~= "table" then return "unknown" end
+  for name, want in pairs(remote) do
+    if m.fingerprint[name] ~= want then return "stale" end
+  end
+  return "current"
 end
 
 local function selfIsStale()
+  if remote == nil then return false end
+  for name, want in pairs(remote) do
+    if selfFp[name] ~= want then return true end
+  end
   return false
 end
 
@@ -280,7 +322,8 @@ local function watcher()
 end
 
 local function doRescan()
-  bus.scan(3)          -- provokes iam replies; heartbeats fill the registry
+  fetchRemote()
+  bus.scan(3)
 end
 
 local function updateAll()
