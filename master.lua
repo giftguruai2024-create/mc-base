@@ -310,7 +310,14 @@ end
 
 local function watcher()
   bus.watch(
-    function(msg) record(msg) end,
+    function(msg)
+      record(msg)
+      local f = flow[msg.from]
+      if (f == "SKIPPED" or f == "lost")
+         and codeState(machines[msg.from]) == "current" then
+        flow[msg.from] = nil
+      end
+    end,
     function(msg)
       local detail = msg.event
       if msg.data ~= nil then
