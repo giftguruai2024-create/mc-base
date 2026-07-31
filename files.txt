@@ -3,7 +3,6 @@
 update.lua
 bus.lua
 rollcall.lua
-amalgam.lua
-panel.lua
 master.lua
 selftest.lua
+tasks.lua
