@@ -502,6 +502,7 @@ local function worker()
     stats.idle = true
     setStatus("misplaced: " .. why)
     sleep(5)
+    recover()
   end
   setStatus("station ok")
 
