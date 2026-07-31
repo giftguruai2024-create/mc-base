@@ -6,3 +6,5 @@ rollcall.lua
 master.lua
 selftest.lua
 tasks.lua
+amalgamturtle.lua
+amalgamfarm.lua
