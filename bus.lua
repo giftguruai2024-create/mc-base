@@ -61,6 +61,7 @@ bus.VERSION = "1"
 
 local identity = nil
 local opened   = false
+local fingerprintCache = nil
 
 -------------------------------------------------------------------------------
 -- Joining
@@ -101,6 +102,7 @@ function bus.open(info)
     startedAt = os.epoch("utc"),
   }
 
+  fingerprintCache = bus.fingerprint()
   return true
 end
 
@@ -111,6 +113,59 @@ local function require_open()
   if not opened then
     error("bus.open() must be called first", 0)
   end
+end
+
+-------------------------------------------------------------------------------
+-- Code fingerprints
+--
+-- FNV-1a, 32-bit, 8 hex chars. Not cryptographic - we only need "did this
+-- file change". CC:Tweaked is Lua 5.2: no native bitwise operators, and all
+-- numbers are doubles, so the multiply is split into 16-bit halves to keep
+-- every intermediate far below 2^53.
+-------------------------------------------------------------------------------
+
+function bus.hashString(data)
+  local h = 2166136261
+  for i = 1, #data do
+    h = bit32.bxor(h, data:byte(i))
+    local lo = h % 65536
+    local hi = math.floor(h / 65536)
+    h = (lo * 16777619 + ((hi * 16777619) % 65536) * 65536) % 4294967296
+  end
+  return ("%08x"):format(h)
+end
+
+function bus.hashFile(path)
+  local f = fs.open(path, "r")
+  if not f then return nil end
+  local data = f.readAll()
+  f.close()
+  return bus.hashString(data)
+end
+
+--- Filenames listed in the local files.txt (written by update.lua).
+function bus.trackedFiles()
+  local f = fs.open("files.txt", "r")
+  if not f then return {} end
+  local body = f.readAll()
+  f.close()
+  local out = {}
+  for line in body:gmatch("[^\r\n]+") do
+    local name = line:match("^%s*(.-)%s*$")
+    if name ~= "" and name:sub(1, 1) ~= "#" then
+      out[#out + 1] = name
+    end
+  end
+  return out
+end
+
+--- { ["amalgam.lua"] = "a31f9c04", ... } for every tracked file that exists.
+function bus.fingerprint()
+  local out = {}
+  for _, name in ipairs(bus.trackedFiles()) do
+    out[name] = bus.hashFile(name)
+  end
+  return out
 end
 
 -------------------------------------------------------------------------------
@@ -125,6 +180,7 @@ function bus.publish(stats)
     id    = identity.id,
     role  = identity.role,
     stats = stats,
+    fingerprint = fingerprintCache,
     t     = os.epoch("utc"),
   }, bus.PROTO_STATS)
 end
@@ -272,11 +328,12 @@ function bus.registry(offlineAfter)
 
   local function record(msg)
     seen[msg.from] = {
-      label    = msg.from,
-      id       = msg.id,
-      role     = msg.role,
-      stats    = msg.stats,
-      lastSeen = os.clock(),
+      label       = msg.from,
+      id          = msg.id,
+      role        = msg.role,
+      stats       = msg.stats,
+      fingerprint = msg.fingerprint,
+      lastSeen    = os.clock(),
     }
   end
 
