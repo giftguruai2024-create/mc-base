@@ -52,7 +52,11 @@ local wantUpdate = false
 local rowHit = {}         -- monitor row y -> tasks index
 
 local function loadTasks()
-  local f = fs.open(DATA_FILE, "r")
+  local path = DATA_FILE
+  if not fs.exists(path) and fs.exists(DATA_FILE .. ".tmp") then
+    path = DATA_FILE .. ".tmp"   -- a crash landed between delete and move
+  end
+  local f = fs.open(path, "r")
   if not f then return end
   local body = f.readAll()
   f.close()
