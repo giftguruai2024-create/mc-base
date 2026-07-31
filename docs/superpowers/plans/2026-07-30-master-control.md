@@ -14,7 +14,7 @@
 - **Repo:** `giftguruai2024-create/mc-base`, branch `main`, public. Raw base URL: `https://raw.githubusercontent.com/giftguruai2024-create/mc-base/main/`.
 - **Line endings:** everything stored LF (already true; Task 1 pins it with `.gitattributes`). Both sides of the hash comparison depend on this.
 - **Monitor sizes are never hardcoded.** Read `mon.getSize()` at runtime, re-layout on `monitor_resize`.
-- **Worker interface contract** (produced in Tasks 2–4, consumed by Task 7+): every bus worker publishes `stats.idle` (boolean — safe to reboot right now) and `stats.running` (boolean — operator intent), its heartbeat message carries `fingerprint = { [filename] = "8-hex-hash" }`, and its `update` command handler only *requests*: the worker's main loop performs `shell.run("update")` + `os.reboot()` at a safe idle point.
+- **Worker interface contract** (produced in Tasks 2–4, consumed by Task 7+): every bus worker publishes `stats.idle` (boolean — safe to reboot right now) and `stats.running` (boolean — operator intent), its heartbeat message carries `fingerprint = { [filename] = "8-hex-hash" }`, and its `update` command handler only *requests*: the worker's main loop performs `shell.run("update")` + `os.reboot()` at a safe idle point. Operator stop/start intent persists across reboots via a `.paused` marker file; the `update` handler's transient stop never touches the marker.
 - **Verification is in-game.** Local checks are Python-oracle vectors and a syntax gate; nothing is marked proven until seen working on the monitor (the vault's verification loop). Milestone checkpoints are Tasks 6, 11, and 13.
 - **Commits:** end every commit message with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 - **Working directory for all tasks:** `C:\Users\Trevo\Code\mc-base` (Windows, PowerShell-compatible commands).
@@ -1246,7 +1246,7 @@ Checkpoint: the row narrates `stopping` → `updating` → `rebooting` → `curr
 - [ ] **Step 7: Restore-prior-state check**
 
 Tap STOP ALL on the master (the old panel no longer exists — this is the master's job now). Checkpoint: the turtle's Status goes `paused` within ~5s. Make another trivial stale-probe commit and push, tap RESCAN, then UPDATE ALL.
-Checkpoint: the turtle updates and comes back `current` but **stays paused** — it was stopped before, so it is left stopped. To resume it before Task 12's START button exists, reboot the turtle (its startup relaunches `amalgam`, which starts running).
+Checkpoint: the turtle updates and comes back `current` but **stays paused** — it was stopped before, so it is left stopped. To resume it before Task 12's START button exists: on the turtle press `Ctrl+T`, type `rm .paused`, then `reboot`.
 
 - [ ] **Step 8: Record in the vault**
 

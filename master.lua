@@ -429,6 +429,7 @@ local function uiLoop()
     if event == "monitor_touch" then
       onTouch(p2, p3)
       redraw()
+      tick = os.startTimer(1)
     elseif event == "timer" and p1 == tick then
       tick = os.startTimer(1)
       redraw()
@@ -528,6 +529,7 @@ local function updateAll()
     else
       flow[label] = "SKIPPED"
       pushEvent(SELF_LABEL, "skipped " .. label .. " (no idle ack)")
+      if wasRunning[label] then bus.command(label, "start") end
     end
   end
 

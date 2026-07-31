@@ -56,6 +56,8 @@ if not bus_ok then bus = nil end
 -- State
 -------------------------------------------------------------------------------
 
+local PAUSE_MARKER = ".paused"
+
 local stats = {
   cycles = 0, blocks = 0, buckets = 0, alloy = 0, stone = 0,
   failures = 0, retries = 0, recoveries = 0,
@@ -63,7 +65,7 @@ local stats = {
   idle = false, running = true,
 }
 
-local running, stopped = true, false
+local running, stopped = not fs.exists(PAUSE_MARKER), false
 local wantUpdate = false
 
 local function log(fmt, ...)
@@ -486,6 +488,18 @@ local function worker()
   setStatus("stopped")
 end
 
+-- Operator start/stop intent survives reboots via the marker file.
+-- The update handler's transient stop must NOT touch the marker.
+local function setRunning(on)
+  running = on
+  if on then
+    if fs.exists(PAUSE_MARKER) then fs.delete(PAUSE_MARKER) end
+  elseif not fs.exists(PAUSE_MARKER) then
+    local f = fs.open(PAUSE_MARKER, "w")
+    if f then f.write("operator stop\n") f.close() end
+  end
+end
+
 local function resetStats()
   stats.cycles, stats.blocks, stats.buckets = 0, 0, 0
   stats.alloy, stats.stone = 0, 0
@@ -493,8 +507,8 @@ local function resetStats()
 end
 
 local busHandlers = {
-  start = function() running = true  end,
-  stop  = function() running = false end,
+  start = function() setRunning(true)  end,
+  stop  = function() setRunning(false) end,
   reset = function() resetStats()    end,
   -- Only requests. The worker loop performs the update when idle -
   -- never yank the rug out from under a moving turtle.
@@ -521,9 +535,9 @@ local function listener()
     local _, msg = rednet.receive(PROTO_CMD, 5)
     if type(msg) == "table" then
       if msg.cmd == "stop" then
-        running = false
+        setRunning(false)
       elseif msg.cmd == "start" then
-        running = true
+        setRunning(true)
       elseif msg.cmd == "reset" then
         resetStats()
       end
