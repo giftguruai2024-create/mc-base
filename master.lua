@@ -194,12 +194,123 @@ local function countStates()
   return total, stale, offline
 end
 
-local function drawRow(y, name, role, link, linkColour, code, codeColour)
-  rowByY[y] = name
-  writeAt(2, y, name:sub(1, 18), colors.white)
-  writeAt(21, y, tostring(role):sub(1, 8), colors.lightGray)
-  writeAt(31, y, link, linkColour)
-  writeAt(41, y, code, codeColour)
+local detailButtons = {}
+
+local function paneGeometry()
+  local listW   = math.max(34, math.floor(W * 0.45))
+  local eventsH = 5
+  local listBottom = H - 4 - eventsH - 1
+  return listW, eventsH, listBottom
+end
+
+local function drawDetail(x1, yTop, yBottom)
+  detailButtons = {}
+  local paneW = W - x1 + 1
+  local label = selected
+  if not label then
+    centreText("tap a machine", x1, yTop + 2, paneW, 1, colors.black, colors.gray)
+    return
+  end
+
+  local isSelf = (label == SELF_LABEL)
+  local m = not isSelf and machines[label] or nil
+  if not isSelf and not m then
+    centreText(label .. " not seen yet", x1, yTop + 2, paneW, 1,
+               colors.black, colors.gray)
+    return
+  end
+
+  fill(x1, yTop, paneW, 1, colors.gray)
+  writeAt(x1 + 1, yTop, label:sub(1, paneW - 10), colors.white, colors.gray)
+  local idText = isSelf and ("#" .. os.getComputerID()) or ("#" .. tostring(m.id))
+  writeAt(x1 + paneW - #idText - 1, yTop, idText, colors.lightGray, colors.gray)
+
+  local y = yTop + 2
+  local function statRow(k, v, colour)
+    if y > yBottom - 5 then return end
+    writeAt(x1 + 1, y, k, colors.lightBlue)
+    writeAt(x1 + 14, y, tostring(v):sub(1, paneW - 15), colour or colors.white)
+    y = y + 1
+  end
+
+  if isSelf then
+    statRow("Status", updating and "updating fleet" or "watching")
+    statRow("Machines", (function()
+      local n = 0
+      for _ in pairs(machines) do n = n + 1 end
+      return n + 1
+    end)())
+  else
+    local st = m.stats or {}
+    statRow("Status", st.status or "?")
+    statRow("Running", st.running and "yes" or "no",
+            st.running and colors.lime or colors.orange)
+    local ago = math.floor(os.clock() - m.lastSeen)
+    statRow("Last seen", ago .. "s ago", ago < OFFLINE_AFTER and colors.lime
+                                          or colors.red)
+    if st.fuel then
+      statRow("Fuel", st.fuel == -1 and "unlimited" or st.fuel)
+    end
+    if st.alloy  then statRow("Alloy",  st.alloy)  end
+    if st.cycles then statRow("Cycles", st.cycles) end
+  end
+
+  -- per-file hash comparison
+  y = y + 1
+  local fp = isSelf and selfFp or m.fingerprint
+  local state = isSelf and (selfIsStale() and "stale" or
+                            (remote and "current" or "unknown"))
+                or codeState(m)
+  statRow("Code", state, CODE_COLOURS[state])
+  if remote and type(fp) == "table" then
+    local names = {}
+    for name in pairs(remote) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do
+      if y > yBottom - 2 then break end
+      local same = fp[name] == remote[name]
+      writeAt(x1 + 2, y, name:sub(1, 16), colors.lightGray)
+      writeAt(x1 + 19, y, same and "ok" or "differs",
+              same and colors.lime or colors.orange)
+      y = y + 1
+    end
+  end
+
+  -- per-machine buttons (not for the master's own row)
+  if not isSelf then
+    local defs = {
+      { label = "START",  colour = colors.green,
+        action = function() bus.command(label, "start") end },
+      { label = "STOP",   colour = colors.red,
+        action = function() bus.command(label, "stop") end },
+      { label = "UPDATE", colour = colors.orange,
+        action = function() bus.command(label, "update") end },
+    }
+    local gap = 1
+    local bw = math.floor((paneW - 2 - (#defs - 1) * gap) / #defs)
+    local bx = x1 + 1
+    for _, d in ipairs(defs) do
+      d.x, d.y, d.w, d.h = bx, yBottom - 2, bw, 3
+      bx = bx + bw + gap
+      detailButtons[#detailButtons + 1] = d
+    end
+    for _, b in ipairs(detailButtons) do
+      fill(b.x, b.y, b.w, b.h, b.colour)
+      centreText(b.label, b.x, b.y, b.w, b.h, b.colour, colors.white)
+    end
+  end
+end
+
+local function drawEvents(yTop, height)
+  writeAt(2, yTop, "EVENTS", colors.lightBlue)
+  for i = 1, height - 1 do
+    local e = events[i]
+    if not e then break end
+    local y = yTop + i
+    writeAt(2, y, e.t, colors.gray)
+    writeAt(9, y, tostring(e.from):sub(1, 15), colors.white)
+    writeAt(26, y, tostring(e.text):sub(1, W - 27), colors.yellow)
+  end
 end
 
 local function redraw()
@@ -207,32 +318,48 @@ local function redraw()
   mon.clear()
   rowByY = {}
 
+  local listW, eventsH, listBottom = paneGeometry()
+
   local total, stale, offline = countStates()
   fill(1, 1, W, 1, colors.blue)
   centreText(("BASE MASTER   %d machines   %d stale   %d offline")
     :format(total, stale, offline), 1, 1, W, 1, colors.blue, colors.white)
 
   if remoteErr then
-    fill(1, 2, W, 1, colors.black)
     centreText("GitHub: " .. remoteErr, 1, 2, W, 1, colors.black, colors.orange)
   end
 
-  fill(1, 3, W, 1, colors.gray)
+  -- list pane header
+  fill(1, 3, listW, 1, colors.gray)
   writeAt(2, 3, "MACHINE", colors.white, colors.gray)
-  writeAt(21, 3, "TYPE", colors.white, colors.gray)
-  writeAt(31, 3, "LINK", colors.white, colors.gray)
-  writeAt(41, 3, "CODE", colors.white, colors.gray)
+  writeAt(listW - 14, 3, "LINK", colors.white, colors.gray)
+  writeAt(listW - 7, 3, "CODE", colors.white, colors.gray)
+
+  -- divider
+  for y = 3, listBottom do
+    writeAt(listW + 1, y, "\149", colors.gray, colors.black)
+  end
+
+  local function listRow(y, name, link, linkColour, code, codeColour)
+    rowByY[y] = name
+    if name == selected then
+      fill(1, y, listW, 1, colors.brown)
+    end
+    local bg = (name == selected) and colors.brown or colors.black
+    writeAt(2, y, name:sub(1, listW - 18), colors.white, bg)
+    writeAt(listW - 14, y, link, linkColour, bg)
+    writeAt(listW - 7, y, code:sub(1, 8), codeColour, bg)
+  end
 
   local y = 4
-
-  -- the master's own row, always first
   local selfCode = selfIsStale() and "stale" or (remote and "current" or "unknown")
-  drawRow(y, SELF_LABEL, "control", "self", colors.cyan,
-          flow[SELF_LABEL] or selfCode, flow[SELF_LABEL] and colors.yellow
-                                        or CODE_COLOURS[selfCode])
+  listRow(y, SELF_LABEL, "self", colors.cyan,
+          flow[SELF_LABEL] or selfCode,
+          flow[SELF_LABEL] and colors.yellow or CODE_COLOURS[selfCode])
   y = y + 1
 
   for _, label in ipairs(sortedLabels()) do
+    if y > listBottom then break end
     local m = machines[label]
     local online = isOnline(label)
     local code = codeState(m)
@@ -241,18 +368,22 @@ local function redraw()
     if flow[label] == "SKIPPED" or flow[label] == "lost" then
       codeColour = colors.orange
     end
-    drawRow(y, label, m.role or "?",
+    listRow(y, label,
             online and "ONLINE" or "OFFLINE",
             online and colors.lime or colors.red,
             codeText, codeColour)
     y = y + 1
-    if y > H - 5 then break end
   end
+
+  drawDetail(listW + 2, 3, listBottom)
+
+  writeAt(1, listBottom + 1, string.rep("\140", W), colors.gray, colors.black)
+  drawEvents(listBottom + 2, eventsH)
 
   for _, b in ipairs(buttons) do
     local c = b.colour
     if b.label == "UPDATE ALL" and (remote == nil or updating) then
-      c = colors.gray   -- disabled without a repo picture / while running
+      c = colors.gray
     end
     fill(b.x, b.y, b.w, b.h, c)
     centreText(b.label, b.x, b.y, b.w, b.h, c, colors.white)
@@ -269,6 +400,15 @@ end
 
 local function onTouch(x, y)
   for _, b in ipairs(buttons) do
+    if isInside(b, x, y) then
+      b.action()
+      fill(b.x, b.y, b.w, b.h, colors.white)
+      centreText(b.label, b.x, b.y, b.w, b.h, colors.white, colors.black)
+      sleep(0.15)
+      return
+    end
+  end
+  for _, b in ipairs(detailButtons) do
     if isInside(b, x, y) then
       b.action()
       fill(b.x, b.y, b.w, b.h, colors.white)
