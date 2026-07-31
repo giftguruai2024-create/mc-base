@@ -65,6 +65,8 @@ local requestRescan    = false
 local requestUpdateAll = false
 
 local rowByY  = {}
+local rowFold = {}         -- y -> group label ([+]/[-] tap zone)
+local folded  = {}         -- group label -> collapsed? (default true, set lazily)
 local buttons = {}
 
 -------------------------------------------------------------------------------
@@ -162,6 +164,56 @@ local CODE_COLOURS = {
   unknown = colors.gray,
 }
 
+-- Hive grouping: a machine with .parent renders under that parent's row.
+-- A group exists if any machine names this label as parent - even when the
+-- controller itself hasn't been seen yet (e.g. children deployed first).
+local function childrenOf(parent)
+  local out = {}
+  for _, label in ipairs(sortedLabels()) do
+    if machines[label].parent == parent then out[#out + 1] = label end
+  end
+  return out
+end
+
+local function groupParents()
+  local seen, out = {}, {}
+  for _, label in ipairs(sortedLabels()) do
+    local p = machines[label].parent
+    if p and not seen[p] then
+      seen[p] = true
+      out[#out + 1] = p
+    end
+  end
+  table.sort(out)
+  return out
+end
+
+local function isGroup(label)
+  for _, label2 in ipairs(sortedLabels()) do
+    if machines[label2].parent == label then return true end
+  end
+  return false
+end
+
+-- members = controller (if seen) + children. Returns total, up, codeText, colour.
+local function groupSummary(label)
+  local members = childrenOf(label)
+  if machines[label] then table.insert(members, 1, label) end
+  local up, stale, unknown = 0, 0, 0
+  for _, l in ipairs(members) do
+    if isOnline(l) then up = up + 1 end
+    local c = codeState(machines[l])
+    if c == "stale" then stale = stale + 1
+    elseif c == "unknown" then unknown = unknown + 1 end
+  end
+  if stale > 0 then
+    return #members, up, stale .. " stale", CODE_COLOURS.stale
+  elseif unknown > 0 then
+    return #members, up, "unknown", CODE_COLOURS.unknown
+  end
+  return #members, up, "current", CODE_COLOURS.current
+end
+
 local function layoutButtons()
   buttons = {
     { label = "UPDATE ALL", colour = colors.orange,
@@ -253,6 +305,19 @@ local function drawDetail(x1, yTop, yBottom)
     end
     if st.alloy  then statRow("Alloy",  st.alloy)  end
     if st.cycles then statRow("Cycles", st.cycles) end
+    -- any other scalar stats a machine publishes (controllers: stored, rate...)
+    local known = { status=true, running=true, idle=true, fuel=true,
+                    alloy=true, cycles=true, extras=true }
+    local extraKeys = {}
+    for k, v in pairs(st) do
+      if not known[k] and (type(v) == "number" or type(v) == "string") then
+        extraKeys[#extraKeys + 1] = k
+      end
+    end
+    table.sort(extraKeys)
+    for i = 1, math.min(#extraKeys, 6) do
+      statRow(extraKeys[i]:sub(1,1):upper() .. extraKeys[i]:sub(2), st[extraKeys[i]])
+    end
   end
 
   -- per-file hash comparison
@@ -317,6 +382,7 @@ local function redraw()
   mon.setBackgroundColor(colors.black)
   mon.clear()
   rowByY = {}
+  rowFold = {}
 
   local listW, eventsH, listBottom = paneGeometry()
 
@@ -358,21 +424,79 @@ local function redraw()
           flow[SELF_LABEL] and colors.yellow or CODE_COLOURS[selfCode])
   y = y + 1
 
+  local groups = groupParents()
+  local inGroup = {}
+  for _, g in ipairs(groups) do inGroup[g] = true end
+
+  -- flat machines first: no parent, and not themselves a group controller
   for _, label in ipairs(sortedLabels()) do
     if y > listBottom then break end
     local m = machines[label]
-    local online = isOnline(label)
-    local code = codeState(m)
-    local codeText = flow[label] or code
-    local codeColour = flow[label] and colors.yellow or CODE_COLOURS[code]
-    if flow[label] == "SKIPPED" or flow[label] == "lost" then
-      codeColour = colors.orange
+    if not m.parent and not inGroup[label] then
+      local online = isOnline(label)
+      local code = codeState(m)
+      local codeText = flow[label] or code
+      local codeColour = flow[label] and colors.yellow or CODE_COLOURS[code]
+      if flow[label] == "SKIPPED" or flow[label] == "lost" then
+        codeColour = colors.orange
+      end
+      listRow(y, label,
+              online and "ONLINE" or "OFFLINE",
+              online and colors.lime or colors.red,
+              codeText, codeColour)
+      y = y + 1
     end
-    listRow(y, label,
-            online and "ONLINE" or "OFFLINE",
-            online and colors.lime or colors.red,
-            codeText, codeColour)
+  end
+
+  -- then the groups
+  for _, g in ipairs(groups) do
+    if y > listBottom then break end
+    if folded[g] == nil then folded[g] = true end
+    local total, up, codeText, codeColour = groupSummary(g)
+
+    rowFold[y] = g
+    if g == selected then fill(1, y, listW, 1, colors.brown) end
+    local bg = (g == selected) and colors.brown or colors.black
+    writeAt(2, y, folded[g] and "[+]" or "[-]", colors.yellow, bg)
+    writeAt(6, y, g:sub(1, listW - 22), colors.white, bg)
+    writeAt(listW - 14, y, up .. " up", up == total and colors.lime or colors.orange, bg)
+    writeAt(listW - 7, y, codeText:sub(1, 8), codeColour, bg)
+    rowByY[y] = g
     y = y + 1
+
+    if not folded[g] then
+      for _, label in ipairs(childrenOf(g)) do
+        if y > listBottom then break end
+        local m = machines[label]
+        local online = isOnline(label)
+        local code = codeState(m)
+        local codeText2 = flow[label] or code
+        local codeColour2 = flow[label] and colors.yellow or CODE_COLOURS[code]
+        if flow[label] == "SKIPPED" or flow[label] == "lost" then
+          codeColour2 = colors.orange
+        end
+        if label == selected then fill(1, y, listW, 1, colors.brown) end
+        local bg2 = (label == selected) and colors.brown or colors.black
+        writeAt(4, y, "\7 " .. label:sub(1, listW - 20), colors.white, bg2)
+        writeAt(listW - 14, y, online and "ONLINE" or "OFFLINE",
+                online and colors.lime or colors.red, bg2)
+        writeAt(listW - 7, y, codeText2:sub(1, 8), codeColour2, bg2)
+        rowByY[y] = label
+        y = y + 1
+      end
+      -- display-only extras published by the controller
+      local ctl = machines[g]
+      local extras = ctl and ctl.stats and ctl.stats.extras
+      if type(extras) == "table" then
+        for _, e in ipairs(extras) do
+          if y > listBottom then break end
+          writeAt(4, y, "\7 " .. tostring(e.name):sub(1, listW - 20), colors.gray)
+          writeAt(listW - 14, y, tostring(e.link or "-"):sub(1, 7), colors.cyan)
+          writeAt(listW - 7, y, "-", colors.gray)
+          y = y + 1
+        end
+      end
+    end
   end
 
   drawDetail(listW + 2, 3, listBottom)
@@ -416,6 +540,10 @@ local function onTouch(x, y)
       sleep(0.15)
       return
     end
+  end
+  if rowFold[y] and x <= 5 then
+    folded[rowFold[y]] = not folded[rowFold[y]]
+    return
   end
   if rowByY[y] then selected = rowByY[y] end
 end
