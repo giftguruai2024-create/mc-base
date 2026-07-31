@@ -104,6 +104,9 @@ if #files == 0 then
   return
 end
 
+-- Save the manifest so bus.trackedFiles() knows what to fingerprint.
+writeLocal("files.txt", manifest)
+
 local updated, skipped, failed = 0, 0, 0
 
 for _, name in ipairs(files) do
