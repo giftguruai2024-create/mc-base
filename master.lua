@@ -326,8 +326,97 @@ local function doRescan()
   bus.scan(3)
 end
 
+-------------------------------------------------------------------------------
+-- UPDATE ALL
+--
+-- stop -> wait for each machine to report idle -> update -> reboot ->
+-- restore prior run state -> master updates itself last. Machines that
+-- do not acknowledge idle are SKIPPED, never force-updated: a turtle
+-- rebooted mid-run wakes up lost.
+-------------------------------------------------------------------------------
+
+local function waitUntil(seconds, predicate)
+  local deadline = os.clock() + seconds
+  while os.clock() < deadline do
+    if predicate() then return true end
+    sleep(0.5)
+  end
+  return false
+end
+
 local function updateAll()
-  -- Task 9 implements the real orchestration.
+  if updating then return end
+  updating = true
+  fetchRemote()                       -- freshest picture before deciding
+  if remote == nil then updating = false return end
+
+  -- 1. target only online + stale machines
+  local targets = {}
+  for _, label in ipairs(sortedLabels()) do
+    if isOnline(label) and codeState(machines[label]) == "stale" then
+      targets[#targets + 1] = label
+    end
+  end
+
+  -- 2. snapshot operator intent BEFORE touching anything
+  local wasRunning = {}
+  for _, label in ipairs(targets) do
+    local st = machines[label].stats or {}
+    wasRunning[label] = (st.running == true)
+  end
+
+  -- 3. stop, then wait for each to acknowledge idle
+  for _, label in ipairs(targets) do
+    flow[label] = "stopping"
+    bus.command(label, "stop")
+  end
+  local acked = {}
+  for _, label in ipairs(targets) do
+    local ok = waitUntil(IDLE_TIMEOUT, function()
+      local st = machines[label].stats or {}
+      return st.idle == true
+    end)
+    if ok then
+      acked[#acked + 1] = label
+    else
+      flow[label] = "SKIPPED"
+      pushEvent(SELF_LABEL, "skipped " .. label .. " (no idle ack)")
+    end
+  end
+
+  -- 4. update (workers reboot themselves afterwards)
+  for _, label in ipairs(acked) do
+    flow[label] = "updating"
+    bus.command(label, "update")
+  end
+
+  -- 5. wait for each to come back CURRENT, 6. restore prior state
+  for _, label in ipairs(acked) do
+    flow[label] = "rebooting"
+    local back = waitUntil(RETURN_TIMEOUT, function()
+      return isOnline(label) and codeState(machines[label]) == "current"
+    end)
+    if back then
+      flow[label] = nil
+      if wasRunning[label] then bus.command(label, "start") end
+      pushEvent(SELF_LABEL, "updated " .. label
+        .. (wasRunning[label] and " (restarted)" or " (left stopped)"))
+    else
+      flow[label] = "lost"
+      pushEvent(SELF_LABEL, "lost " .. label .. " after update")
+    end
+  end
+
+  -- 7. the master itself, last
+  if selfIsStale() then
+    flow[SELF_LABEL] = "updating"
+    pushEvent(SELF_LABEL, "updating self, rebooting")
+    sleep(1)
+    shell.run("update")
+    os.reboot()
+  end
+
+  updating = false
 end
 
 local function actionLoop()
