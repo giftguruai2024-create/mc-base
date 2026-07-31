@@ -47,6 +47,11 @@ local WAIT_ON_BLOCKED = 15   -- pause when a barrel is full/empty
 local PROTO_STATS = "amalgam_stats"
 local PROTO_CMD   = "amalgam_cmd"
 
+-- Machine bus (cc.stats / cc.cmd). Optional: if bus.lua is missing the
+-- turtle still runs standalone and the old panel still works.
+local bus_ok, bus = pcall(require, "bus")
+if not bus_ok then bus = nil end
+
 -------------------------------------------------------------------------------
 -- State
 -------------------------------------------------------------------------------
@@ -55,9 +60,11 @@ local stats = {
   cycles = 0, blocks = 0, buckets = 0, alloy = 0, stone = 0,
   failures = 0, retries = 0, recoveries = 0,
   status = "starting", fuel = 0,
+  idle = false, running = true,
 }
 
 local running, stopped = true, false
+local wantUpdate = false
 
 local function log(fmt, ...)
   print(("[%s] "):format(textutils.formatTime(os.time(), true)) .. fmt:format(...))
@@ -74,6 +81,15 @@ local function openModem()
   if modem then
     rednet.open(peripheral.getName(modem))
     hasModem = true
+    if bus then
+      bus.open{
+        label    = os.getComputerLabel() or "AmalgamTurtle",
+        role     = "turtle",
+        program  = "amalgam.lua",
+        provides = { "amalgam" },
+        accepts  = { "start", "stop", "reset", "update" },
+      }
+    end
   end
 end
 
@@ -81,7 +97,9 @@ local function broadcast()
   if not hasModem then return end
   local fuel = turtle.getFuelLevel()
   stats.fuel = (fuel == "unlimited") and -1 or fuel
+  stats.running = running
   rednet.broadcast(stats, PROTO_STATS)
+  if bus and bus.isOpen() then bus.publish(stats) end
 end
 
 local function setStatus(s)
@@ -429,16 +447,29 @@ local limit = nil
 
 local function worker()
   while not stopped do
+    if wantUpdate then
+      stats.idle = true
+      setStatus("updating")
+      if bus and bus.isOpen() then bus.event("updating") end
+      sleep(0.5)                -- let the event leave the modem
+      shell.run("update")
+      os.reboot()
+    end
+
     if not running then
+      stats.idle = true
       setStatus("paused")
       sleep(1)
     else
+      stats.idle = false
       if cycle() then
         stats.cycles = stats.cycles + 1
+        stats.idle = true
         setStatus("idle")
         log("Cycle %d done (%d alloy)", stats.cycles, stats.alloy)
       else
         stats.failures = stats.failures + 1
+        stats.idle = true
         local wait = isWaitState(stats.status) and WAIT_ON_BLOCKED or 5
         log("Cycle failed (%s), waiting %ds", stats.status, wait)
         broadcast()
@@ -455,6 +486,32 @@ local function worker()
   setStatus("stopped")
 end
 
+local function resetStats()
+  stats.cycles, stats.blocks, stats.buckets = 0, 0, 0
+  stats.alloy, stats.stone = 0, 0
+  stats.failures, stats.retries, stats.recoveries = 0, 0, 0
+end
+
+local busHandlers = {
+  start = function() running = true  end,
+  stop  = function() running = false end,
+  reset = function() resetStats()    end,
+  -- Only requests. The worker loop performs the update when idle -
+  -- never yank the rug out from under a moving turtle.
+  update = function()
+    running = false
+    wantUpdate = true
+  end,
+}
+
+local function busListener()
+  if not (bus and bus.isOpen()) then
+    while not stopped do sleep(5) end
+    return
+  end
+  bus.serve(busHandlers)
+end
+
 local function listener()
   if not hasModem then
     while not stopped do sleep(5) end
@@ -468,9 +525,7 @@ local function listener()
       elseif msg.cmd == "start" then
         running = true
       elseif msg.cmd == "reset" then
-        stats.cycles, stats.blocks, stats.buckets = 0, 0, 0
-        stats.alloy, stats.stone = 0, 0
-        stats.failures, stats.retries, stats.recoveries = 0, 0, 0
+        resetStats()
       end
     end
     broadcast()
@@ -502,4 +557,4 @@ log(hasModem and "Modem found, broadcasting stats" or "No modem, running standal
 log("%s -> %s", STAGES[1].label, STAGES[#STAGES].label)
 log("Hold Ctrl+T to stop.")
 
-parallel.waitForAny(worker, listener, heartbeat)
+parallel.waitForAny(worker, listener, busListener, heartbeat)
