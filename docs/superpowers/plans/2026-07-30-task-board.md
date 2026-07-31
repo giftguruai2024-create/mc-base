@@ -1,3 +1,39 @@
+# Task Board Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** A personal to-do board on its own computer: type tasks on the terminal, tap them done on a touch monitor, list survives reboots, machine shows up on the Master like any other bus citizen.
+
+**Architecture:** One new program `tasks.lua` (four coroutines: terminal input, monitor UI, bus serve, heartbeat) with a Lua-serialized `tasks.dat` store. Ships via the existing GitHub deploy; the same commit retires the amalgam-era programs (`panel.lua`, `amalgam.lua`, `touchpanel.lua`) from the manifest and repo. Spec: vault note `08 - Machines/M - Task Board.md`.
+
+**Tech Stack:** CC:Tweaked (MC 1.21.1), Lua 5.2, existing `bus.lua`/`update.lua` infrastructure, repo `giftguruai2024-create/mc-base` on `main`.
+
+## Global Constraints
+
+- **Lua dialect:** CC:Tweaked ≈ Lua 5.2. No native bitwise ops, no `//`.
+- **Monitor size never hardcoded:** all layout from `mon.getSize()` at runtime; re-layout on `monitor_resize`.
+- **`tasks.dat` must never be in `files.txt`** — the updater must never overwrite user data. Saves go through a tmp-file + move so a crash mid-write can't corrupt the list.
+- **Terminal numbers = displayed numbers.** `done N`/`del N` refer to the numbers currently shown on the wall (open tasks first in added order, then done tasks). The view order is computed by one function used by both the renderer and the command parser.
+- **Fleet update contract:** the bus `update` handler only sets a flag; the UI loop performs `update` + reboot between draws, emitting `bus.event("updating")` first. `stats.idle = true` and `stats.running = true` always (a display has no unsafe moment).
+- **Standalone degrade:** no modem → print a note and run without bus features; never crash.
+- **Manifest-shrink is safe by design** (verified in the master's final review): `codeState` compares only files listed in the *remote* `files.txt`, so removing `panel.lua`/`amalgam.lua` strands nothing. After the manifest changes, existing machines show STALE until they update — expected and correct.
+- **Commits:** end every commit message with `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- **Working directory:** `C:\Users\Trevo\Code\mc-base`. Syntax gate: `py tools\check.py`.
+
+---
+
+### Task 1: Write tasks.lua
+
+**Files:**
+- Create: `tasks.lua`
+
+**Interfaces:**
+- Consumes: `bus.open/isOpen/serve/heartbeat/event` from the existing `bus.lua`.
+- Produces: the complete program below, verbatim.
+
+- [ ] **Step 1: Create `tasks.lua` with exactly this code**
+
+```lua
 --[[
   tasks.lua -- personal to-do board: terminal input, touch monitor display
 
@@ -52,11 +88,7 @@ local wantUpdate = false
 local rowHit = {}         -- monitor row y -> tasks index
 
 local function loadTasks()
-  local path = DATA_FILE
-  if not fs.exists(path) and fs.exists(DATA_FILE .. ".tmp") then
-    path = DATA_FILE .. ".tmp"   -- a crash landed between delete and move
-  end
-  local f = fs.open(path, "r")
+  local f = fs.open(DATA_FILE, "r")
   if not f then return end
   local body = f.readAll()
   f.close()
@@ -156,8 +188,7 @@ end
 local function handleTouch(x, y)
   local idx = rowHit[y]
   if not idx then return end
-  if not tasks[idx] then return end
-  if x >= W - 1 then
+  if x >= W - 2 then
     table.remove(tasks, idx)
   else
     tasks[idx].done = not tasks[idx].done
@@ -287,3 +318,123 @@ end
 
 loadTasks()
 parallel.waitForAny(terminalLoop, uiLoop, busServe, heartbeat)
+```
+
+- [ ] **Step 2: Syntax gate**
+
+Run: `py tools\check.py tasks.lua`
+Expected: `ok`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add tasks.lua
+git commit -m "feat: task board - terminal input, touch monitor, persistent list
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 2: Manifest update + amalgam-era cleanup + push
+
+**Files:**
+- Modify: `files.txt`
+- Delete: `panel.lua`, `amalgam.lua`, `touchpanel.lua`
+
+**Interfaces:**
+- Produces: the manifest every machine pulls. After this push, all machines show STALE on the master until updated (expected — the manifest changed).
+
+- [ ] **Step 1: Rewrite `files.txt`**
+
+```
+# Manifest read by update.lua. One filename per line.
+# Add a line and the updater pulls it to every machine automatically.
+update.lua
+bus.lua
+rollcall.lua
+master.lua
+selftest.lua
+tasks.lua
+```
+
+- [ ] **Step 2: Remove the retired programs**
+
+Run: `git rm panel.lua amalgam.lua touchpanel.lua`
+Expected: three `rm` lines. (Git history and the vault code notes remain the record; the amalgam plant no longer exists in-world.)
+
+- [ ] **Step 3: Full syntax gate**
+
+Run: `py tools\check.py`
+Expected: `ok` for the five remaining `.lua` files, exit 0.
+
+- [ ] **Step 4: Commit and push**
+
+```bash
+git add files.txt
+git commit -m "feat: ship task board; retire amalgam-era programs
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+git push
+```
+
+- [ ] **Step 5: Verify the push**
+
+Run: `Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/giftguruai2024-create/mc-base/main/files.txt?cb=1" | Select-Object -ExpandProperty Content`
+Expected: the six-entry manifest including `tasks.lua`, excluding `panel.lua`/`amalgam.lua`.
+
+---
+
+### Task 3: MILESTONE — build and verify in-game (user)
+
+**Files:** none (in-game + vault updates)
+
+- [ ] **Step 1: Build the hardware**
+
+Place an Advanced Computer, attach a modem on a free side (right-click to enable — red glow), and build the touch Advanced Monitor wall next to it (2×2 or larger).
+Checkpoint: terminal opens; monitor is one black rectangle.
+
+- [ ] **Step 2: Bootstrap**
+
+```
+wget https://raw.githubusercontent.com/giftguruai2024-create/mc-base/main/update.lua update
+```
+then `update`, then `label set TaskBoard`.
+Checkpoint: six files download including `tasks.lua`.
+
+- [ ] **Step 3: Startup file**
+
+`edit startup`, exactly two lines, save (Ctrl → Save), exit (Ctrl → Exit):
+
+```lua
+shell.run("update")
+shell.run("tasks")
+```
+
+Then `reboot`.
+Checkpoint: monitor shows the blue TASKS header, `0 open   0 done`, and the hint line.
+
+- [ ] **Step 4: Exercise it**
+
+Type `get more iron` + Enter → appears on the wall as `[ ] get more iron`. Add one more. `done 1` → grays. Tap task 2's checkbox on the wall → grays. Tap an `x` → row disappears. `clear` → done tasks swept.
+Checkpoint: every action reflects on the wall within a second.
+
+- [ ] **Step 5: Persistence**
+
+`reboot`. Checkpoint: the list comes back exactly as it was.
+
+- [ ] **Step 6: The fleet sees it**
+
+Walk to the Master. Checkpoint: `TaskBoard  ONLINE  current` row exists. The Master itself likely shows STALE (the manifest changed under it) — tap UPDATE ALL and watch it update itself; TaskBoard stays current.
+
+- [ ] **Step 7: Vault records**
+
+`M - Task Board.md` → `status: built` (then `proven` once steps 4–6 all passed), record the computer ID and location. Add to `Machine index` and `Network map`. Create `06 - Code/tasks.lua.md`. Mark `M - Base Panel.md` retired if not already. Harvest components per cc-components if anything new proved reusable (the tmp+move save and the view-order numbering are candidates).
+
+---
+
+## Self-Review (completed at plan time)
+
+- **Spec coverage:** terminal add/done/del/clear/help (T1 `handleLine`), touch toggle/delete (T1 `handleTouch`), open-first ordering with matching numbers (`viewOrder` used by both parser and renderer), overflow `+N more`, persistence with tmp+move, standalone degrade, bus identity/heartbeat/update-flag contract, deploy rider removing the three retired programs (T2), full in-game verification incl. Master row (T3). 
+- **Placeholder scan:** none.
+- **Type consistency:** `viewOrder`/`counts`/`saveTasks`/`drawBoard`/`handleTouch`/`handleLine` names consistent throughout; stats fields match the spec note's table (`open`, `done`, `status`, `idle`, `running`).
