@@ -66,7 +66,9 @@ local function ratePerHour(now, count)
   end
   local first = samples[1]
   if not first or now - first.t < 30 then return nil end
-  return math.floor((count - first.count) * 3600 / (now - first.t) + 0.5)
+  local r = math.floor((count - first.count) * 3600 / (now - first.t) + 0.5)
+  if r < 0 then return nil end
+  return r
 end
 
 -------------------------------------------------------------------------------
@@ -94,8 +96,14 @@ local function forward(cmd)
 end
 
 local busHandlers = {
-  start = function() setRunning(true)  forward("start") end,
-  stop  = function() setRunning(false) forward("stop")  end,
+  start = function(args)
+    setRunning(true)
+    if args and args.fanout then forward("start") end
+  end,
+  stop = function(args)
+    setRunning(false)
+    if args and args.fanout then forward("stop") end
+  end,
   update = function() wantUpdate = true end,
 }
 

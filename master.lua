@@ -188,13 +188,6 @@ local function groupParents()
   return out
 end
 
-local function isGroup(label)
-  for _, label2 in ipairs(sortedLabels()) do
-    if machines[label2].parent == label then return true end
-  end
-  return false
-end
-
 -- members = controller (if seen) + children. Returns total, up, codeText, colour.
 local function groupSummary(label)
   local members = childrenOf(label)
@@ -345,9 +338,9 @@ local function drawDetail(x1, yTop, yBottom)
   if not isSelf then
     local defs = {
       { label = "START",  colour = colors.green,
-        action = function() bus.command(label, "start") end },
+        action = function() bus.command(label, "start", { fanout = true }) end },
       { label = "STOP",   colour = colors.red,
-        action = function() bus.command(label, "stop") end },
+        action = function() bus.command(label, "stop", { fanout = true }) end },
       { label = "UPDATE", colour = colors.orange,
         action = function() bus.command(label, "update") end },
     }

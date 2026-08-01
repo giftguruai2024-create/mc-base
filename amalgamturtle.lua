@@ -68,7 +68,7 @@ local stats = {
   idle = false, running = true,
 }
 
-local running, stopped = not fs.exists(PAUSE_MARKER), false
+local running = not fs.exists(PAUSE_MARKER)
 local wantUpdate = false
 
 local function log(fmt, ...)
@@ -81,11 +81,12 @@ end
 
 local function openBus()
   if not bus then return end
+  local label = os.getComputerLabel()
   bus.open{
-    label    = os.getComputerLabel() or ("AmalgamT" .. os.getComputerID()),
+    label    = label or ("UNLABELLED_" .. os.getComputerID()),
     role     = "turtle",
     program  = "amalgamturtle.lua",
-    parent   = PARENT,
+    parent   = label and PARENT or nil,
     provides = { "andesite_alloy" },
     accepts  = { "start", "stop", "reset", "update" },
   }
@@ -434,7 +435,7 @@ end
 
 local function isWaitState(s)
   return s == "no stone" or s == "output full" or s == "no water"
-      or s == "no bucket" or s == "out of fuel"
+      or s == "no bucket" or s == "out of fuel" or s == "wrong input item"
       or s:find("misplaced") == 1 or s:find("unexpected block") == 1
 end
 
@@ -481,14 +482,14 @@ local busHandlers = {
 
 local function busListener()
   if not (bus and bus.isOpen()) then
-    while not stopped do sleep(5) end
+    while true do sleep(5) end
     return
   end
   bus.serve(busHandlers)
 end
 
 local function heartbeat()
-  while not stopped do
+  while true do
     broadcast()
     sleep(5)
   end
@@ -506,7 +507,7 @@ local function worker()
   end
   setStatus("station ok")
 
-  while not stopped do
+  while true do
     if wantUpdate then
       stats.idle = true
       setStatus("updating")
@@ -538,7 +539,6 @@ local function worker()
       end
     end
   end
-  setStatus("stopped")
 end
 
 -------------------------------------------------------------------------------
